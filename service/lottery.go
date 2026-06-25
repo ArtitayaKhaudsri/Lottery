@@ -49,11 +49,10 @@ func (h *LotteryService) Add(date string) {
 			return
 		}
 	} else {
-		draw := models.Draw{
+		draw = models.Draw{
 			DrawDate: drawDate,
 		}
-		drawResult := h.DB.Create(&draw)
-		if drawResult.Error != nil {
+		if err := h.DB.Create(&draw).Error; err != nil {
 			fmt.Println("Date wrong:", err)
 			return
 		}

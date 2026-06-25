@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"lottery/models"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -61,6 +62,7 @@ func (h *LotteryHandler) CheckNumber(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Sorry, you are not winner"})
+	go h.saveRedis(draw.DrawID, date)
 	return
 }
 
@@ -77,18 +79,58 @@ func validateRequest(date string, number string) string {
 	return ""
 }
 
+func (h *LotteryHandler) saveRedis(drawID uint64, date string) {
+	var prizes []models.Prize
+	if err := h.DB.Where("draw_id = ?", drawID).Find(&prizes).Error; err != nil {
+		fmt.Printf("query failed: %v\n", err)
+		return
+	}
+
+	redisData := make([]models.RedisPrize, 0, len(prizes))
+	for _, prize := range prizes {
+		redisData = append(redisData, models.RedisPrize{
+			Number:    prize.WinningNumber,
+			PrizeType: prize.PrizeType,
+		})
+	}
+	data, err := json.Marshal(redisData)
+	if err != nil {
+		fmt.Printf("marshal failed: %v\n", err)
+		return
+	}
+
+	if err := h.Redis.Set(context.Background(), date, data, 24*time.Hour).Err(); err != nil {
+		fmt.Printf("redis set failed: %v\n", err)
+		return
+	}
+
+	fmt.Printf("redis set date %s success\n", date)
+}
+
 func (h *LotteryHandler) SearchNumber(c *gin.Context) {
 	number := c.Query("number")
-	var result models.PrizeResponse
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	size, _ := strconv.Atoi(c.DefaultQuery("size", "10"))
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 10
+	}
+
+	var result []models.PrizeResponse
 	err := h.DB.Table("prizes").
 		Select("draws.draw_date as date, prizes.winning_number as number, prizes.prize_type as type").
 		Joins("JOIN draws ON draws.draw_id = prizes.draw_id").
-		Where("prizes.winning_number = ?", number).
-		Scan(&result).Error
-
+		Where("prizes.winning_number LIKE ?", "%"+number+"%").Limit(size).Offset((page - 1) * size).Scan(&result).Error
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, result)
+
+	c.JSON(http.StatusOK, gin.H{
+		"page": page,
+		"size": size,
+		"data": result,
+	})
 }
